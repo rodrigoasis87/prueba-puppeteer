@@ -1,0 +1,82 @@
+[
+  {
+    "name": "li_rm",
+    "value": "AQFjKBrm3DMvkQAAAZZqtRDyCxZ1DeAu6_wJ6f_iboAZGZQ_-9GwZ4PDCDrkAiDIL4c3QMRCOBc8CJbU0O03R9aflGZh1ur5i7W_kP0UzEJ3fqTfHSWt9mYY",
+    "domain": ".www.linkedin.com",
+    "path": "/",
+    "expires": 1777082974.492365,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "lang",
+    "value": "v=2&lang=en-us",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "JSESSIONID",
+    "value": "\"ajax:1781244138387822343\"",
+    "domain": ".www.linkedin.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "bcookie",
+    "value": "\"v=2&4b64868d-54a0-4eca-8257-14237d285be1\"",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "expires": 1777082974.492708,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "bscookie",
+    "value": "\"v=1&202504250209336b98594c-61fa-40ae-811e-7138bccd92aeAQEHkyPZJasnsu4JPfj5WKQvxn8w20ge\"",
+    "domain": ".www.linkedin.com",
+    "path": "/",
+    "expires": 1777082974.492766,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "lidc",
+    "value": "\"b=VGST04:s=V:r=V:a=V:p=V:g=3522:u=1:x=1:i=1745546973:t=1745633373:v=2:sig=AQEgwFpmPsMMnO5vvSnrwgDZqS_zVd67\"",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "expires": 1745633374.492789,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "__cf_bm",
+    "value": "QKmFeHJFE1ng5MGgPSlJ.q4RUkJvW_4T6uTXIyvBjk0-1745546973-1.0.1.1-9MXX8PoJ9ElWyvJViLiDV.6oeA.mV446KQfSk9Tw7Y2mQoaYfQCSlslC84Tl86T.QzxbBxq4Kb9XFcSowvulpUzLDTi.o_shE3SYbm2pMW8",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "expires": 1745548774.492803,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "AMCV_14215E3D5995C57C0A495C55%40AdobeOrg",
+    "value": "-637568504%7CMCIDTS%7C20204%7CvVersion%7C5.1.1",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "expires": 1761098976,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  }
+]
