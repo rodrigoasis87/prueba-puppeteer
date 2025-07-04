@@ -1,6 +1,14 @@
+require('dotenv').config();
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const { MongoClient, ObjectId } = require('mongodb');
+
+// Configuración de MongoDB
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/linkedin_scraper';
+const DB_NAME = 'linkedin_scraper';
+const COLLECTION_PUBLICACIONES = 'publicaciones';
+const COLLECTION_METADATOS = 'metadatos';
 
 // Lista de perfiles a extraer
 const PERFILES = [
@@ -13,6 +21,14 @@ const PERFILES = [
     url: 'https://www.linkedin.com/in/aitor-pastor/recent-activity/all/'
   }
 ];
+
+// Función para conectar a MongoDB
+async function conectarMongoDB() {
+  const client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  console.log('Conectado a MongoDB');
+  return client;
+}
 
 // Función para navegar con reintentos
 async function navegarConReintentos(page, url, opciones = {}, maxIntentos = 3) {
@@ -46,8 +62,11 @@ async function navegarConReintentos(page, url, opciones = {}, maxIntentos = 3) {
 }
 
 // Función para extraer publicaciones
-async function extraerPublicaciones(page) {
+async function extraerPublicaciones(page, publicacionesExistentes = []) {
   console.log('Esperando a que carguen las publicaciones...');
+  
+  // Crear un conjunto de textos existentes para búsqueda rápida
+  const textosExistentes = new Set(publicacionesExistentes.map(p => p.texto));
   
   // Esperar a que aparezcan las publicaciones con varios selectores posibles
   try {
@@ -65,6 +84,7 @@ async function extraerPublicaciones(page) {
   let publicacionesAntes = 0;
   let intentosSinNuevas = 0;
   const maxIntentosSinNuevas = 3;
+  let publicacionesNuevas = 0;
   
   console.log('Comenzando a extraer publicaciones...');
   
@@ -121,14 +141,19 @@ async function extraerPublicaciones(page) {
       });
     });
     
-    // Filtrar duplicados
+    // Filtrar duplicados dentro de esta ejecución
     const textosActuales = publicaciones.map(p => p.texto);
-    const publicacionesUnicas = nuevasPublicaciones.filter(p => !textosActuales.includes(p.texto));
+    const publicacionesUnicasEstaEjecucion = nuevasPublicaciones.filter(p => !textosActuales.includes(p.texto));
+    
+    // Filtrar publicaciones que ya existían en ejecuciones anteriores
+    const publicacionesUnicasTotal = publicacionesUnicasEstaEjecucion.filter(p => !textosExistentes.has(p.texto));
     
     // Añadir nuevas publicaciones
-    publicaciones = [...publicaciones, ...publicacionesUnicas];
+    publicaciones = [...publicaciones, ...publicacionesUnicasEstaEjecucion];
+    publicacionesNuevas += publicacionesUnicasTotal.length;
     
-    console.log(`Encontradas ${publicaciones.length} publicaciones únicas hasta ahora...`);
+    console.log(`Encontradas ${publicaciones.length} publicaciones únicas en esta ejecución...`);
+    console.log(`De las cuales ${publicacionesNuevas} son nuevas respecto a ejecuciones anteriores.`);
     
     // Verificar si hemos encontrado nuevas
     if (publicaciones.length > publicacionesAntes) {
@@ -145,17 +170,76 @@ async function extraerPublicaciones(page) {
   }
   
   console.log(`Extracción completada. Total: ${publicaciones.length} publicaciones.`);
+  console.log(`Publicaciones nuevas: ${publicacionesNuevas}`);
+  
+  // Añadir timestamp a cada publicación
+  const ahora = new Date();
+  publicaciones = publicaciones.map(p => ({
+    ...p,
+    extraido_en: ahora,
+    actualizado_en: ahora
+  }));
+  
   return publicaciones;
+}
+
+// Función para obtener publicaciones existentes
+async function obtenerPublicacionesExistentes(db, perfilNombre) {
+  const collection = db.collection(COLLECTION_PUBLICACIONES);
+  const publicaciones = await collection.find({ perfil_id: perfilNombre }).toArray();
+  return publicaciones;
+}
+
+// Función para guardar publicaciones en MongoDB
+async function guardarPublicacionesEnMongoDB(db, perfilNombre, publicaciones) {
+  if (publicaciones.length === 0) return;
+  
+  const collection = db.collection(COLLECTION_PUBLICACIONES);
+  
+  // Preparar documentos para inserción
+  const documentos = publicaciones.map(p => ({
+    perfil_id: perfilNombre,
+    texto: p.texto,
+    enlaces: p.enlaces,
+    fecha_texto: p.fecha,
+    html: p.html,
+    extraido_en: p.extraido_en,
+    actualizado_en: p.actualizado_en
+  }));
+  
+  // Insertar documentos
+  const resultado = await collection.insertMany(documentos);
+  console.log(`${resultado.insertedCount} publicaciones guardadas en MongoDB`);
+  return resultado;
+}
+
+// Función para guardar metadatos de ejecución
+async function guardarMetadatosEjecucion(db, datos) {
+  const collection = db.collection(COLLECTION_METADATOS);
+  const resultado = await collection.insertOne({
+    ...datos,
+    timestamp: new Date()
+  });
+  console.log(`Metadatos de ejecución guardados en MongoDB con ID: ${resultado.insertedId}`);
+  return resultado;
 }
 
 async function scrapeLinkedIn() {
   let browser;
+  let mongoClient;
   
   try {
+    // Conectar a MongoDB
+    mongoClient = await conectarMongoDB();
+    const db = mongoClient.db(DB_NAME);
+    
+    // Crear índices si no existen
+    await db.collection(COLLECTION_PUBLICACIONES).createIndex({ perfil_id: 1 });
+    await db.collection(COLLECTION_PUBLICACIONES).createIndex({ texto: 1 });
+    
     console.log('Iniciando navegador...');
     
     // Iniciar navegador con Playwright
-    // Esto detectará automáticamente Chrome en Windows
     browser = await chromium.launch({
       headless: false,
       channel: 'chrome', // Usar Chrome instalado
@@ -236,53 +320,162 @@ async function scrapeLinkedIn() {
     
     // Objeto para almacenar todas las publicaciones
     const todasLasPublicaciones = {};
+    const metadatosEjecucion = {
+      perfiles_procesados: [],
+      total_publicaciones: 0,
+      nuevas_publicaciones: 0,
+      inicio_ejecucion: new Date()
+    };
     
     // Procesar cada perfil
     for (const perfil of PERFILES) {
       console.log(`\n--- Procesando perfil: ${perfil.nombre} ---`);
       
+      // Obtener publicaciones existentes de MongoDB
+      const publicacionesExistentes = await obtenerPublicacionesExistentes(db, perfil.nombre);
+      console.log(`Encontradas ${publicacionesExistentes.length} publicaciones existentes para ${perfil.nombre} en MongoDB`);
+      
       // Navegar a la página de actividad reciente del perfil
       console.log(`Navegando a: ${perfil.url}`);
       await navegarConReintentos(page, perfil.url);
       
-      // Extraer publicaciones
-      const publicaciones = await extraerPublicaciones(page);
+      // Extraer publicaciones (pasando las existentes para filtrar)
+      const publicaciones = await extraerPublicaciones(page, publicacionesExistentes);
+      
+      // Filtrar publicaciones que ya existen en MongoDB
+      const textosExistentes = new Set(publicacionesExistentes.map(p => p.texto));
+      const publicacionesNuevas = publicaciones.filter(p => !textosExistentes.has(p.texto));
+      
+      console.log(`Encontradas ${publicacionesNuevas.length} publicaciones nuevas para ${perfil.nombre}`);
       
       // Guardar las publicaciones de este perfil
       todasLasPublicaciones[perfil.nombre] = publicaciones;
       
+      // Guardar en MongoDB
+      if (publicacionesNuevas.length > 0) {
+        await guardarPublicacionesEnMongoDB(db, perfil.nombre, publicacionesNuevas);
+      }
+      
+      // Actualizar metadatos
+      metadatosEjecucion.perfiles_procesados.push({
+        nombre: perfil.nombre,
+        total_publicaciones: publicaciones.length,
+        nuevas_publicaciones: publicacionesNuevas.length
+      });
+      metadatosEjecucion.total_publicaciones += publicaciones.length;
+      metadatosEjecucion.nuevas_publicaciones += publicacionesNuevas.length;
+      
       // También guardar en un archivo individual para este perfil
-      const nombreArchivoIndividual = `publicaciones${perfil.nombre}.json`;
+      const nombreArchivoIndividual = `publicaciones_${perfil.nombre}.json`;
+      
+      // Leer archivo existente si existe
+      let todasLasPublicacionesPerfil = [];
+      try {
+        if (fs.existsSync(nombreArchivoIndividual)) {
+          const contenidoExistente = fs.readFileSync(nombreArchivoIndividual, 'utf-8');
+          todasLasPublicacionesPerfil = JSON.parse(contenidoExistente);
+          console.log(`Archivo existente leído: ${nombreArchivoIndividual}`);
+        }
+      } catch (error) {
+        console.log(`No se pudo leer el archivo existente: ${error.message}`);
+      }
+      
+      // Filtrar publicaciones nuevas para el archivo
+      const textosArchivoExistente = new Set(todasLasPublicacionesPerfil.map(p => p.texto));
+      const publicacionesNuevasArchivo = publicaciones.filter(p => !textosArchivoExistente.has(p.texto));
+      
+      // Combinar publicaciones existentes con nuevas
+      const publicacionesCombinadas = [...todasLasPublicacionesPerfil, ...publicacionesNuevasArchivo];
+      
+      // Guardar archivo combinado
       fs.writeFileSync(
         path.join(process.cwd(), nombreArchivoIndividual),
-        JSON.stringify(publicaciones, null, 2),
+        JSON.stringify(publicacionesCombinadas, null, 2),
         'utf-8'
       );
       
       console.log(`Publicaciones de ${perfil.nombre} guardadas en: ${nombreArchivoIndividual}`);
+      console.log(`Se añadieron ${publicacionesNuevasArchivo.length} nuevas publicaciones al archivo.`);
       
-      // Mostrar ejemplo de la primera publicación
-      if (publicaciones.length > 0) {
-        console.log(`\nEjemplo de publicación de ${perfil.nombre}:`);
-        console.log('Texto:', publicaciones[0].texto.substring(0, 150) + '...');
+      // Mostrar ejemplo de la primera publicación nueva
+      if (publicacionesNuevas.length > 0) {
+        console.log(`\nEjemplo de publicación nueva de ${perfil.nombre}:`);
+        console.log('Texto:', publicacionesNuevas[0].texto.substring(0, 150) + '...');
       }
     }
     
     // Guardar todas las publicaciones en un solo archivo
     const nombreArchivoCompleto = 'todas_las_publicaciones.json';
+    
+    // Leer archivo existente si existe
+    let todasLasPublicacionesExistentes = {};
+    try {
+      if (fs.existsSync(nombreArchivoCompleto)) {
+        const contenidoExistente = fs.readFileSync(nombreArchivoCompleto, 'utf-8');
+        todasLasPublicacionesExistentes = JSON.parse(contenidoExistente);
+        console.log(`Archivo existente leído: ${nombreArchivoCompleto}`);
+      }
+    } catch (error) {
+      console.log(`No se pudo leer el archivo existente: ${error.message}`);
+    }
+    
+    // Combinar publicaciones existentes con nuevas
+    const todasLasPublicacionesCombinadas = { ...todasLasPublicacionesExistentes };
+    
+    // Para cada perfil, combinar publicaciones
+    for (const perfil of PERFILES) {
+      const publicacionesNuevas = todasLasPublicaciones[perfil.nombre] || [];
+      const publicacionesExistentes = todasLasPublicacionesExistentes[perfil.nombre] || [];
+      
+      // Filtrar publicaciones nuevas
+      const textosExistentes = new Set(publicacionesExistentes.map(p => p.texto));
+      const publicacionesNuevasFiltradas = publicacionesNuevas.filter(p => !textosExistentes.has(p.texto));
+      
+      // Combinar
+      todasLasPublicacionesCombinadas[perfil.nombre] = [
+        ...publicacionesExistentes,
+        ...publicacionesNuevasFiltradas
+      ];
+    }
+    
+    // Guardar archivo combinado
     fs.writeFileSync(
       path.join(process.cwd(), nombreArchivoCompleto),
-      JSON.stringify(todasLasPublicaciones, null, 2),
+      JSON.stringify(todasLasPublicacionesCombinadas, null, 2),
       'utf-8'
     );
     
     console.log(`\nTodas las publicaciones guardadas en: ${nombreArchivoCompleto}`);
     
-    return todasLasPublicaciones;
+    // Finalizar metadatos y guardar
+    metadatosEjecucion.fin_ejecucion = new Date();
+    metadatosEjecucion.duracion_ms = metadatosEjecucion.fin_ejecucion - metadatosEjecucion.inicio_ejecucion;
+    await guardarMetadatosEjecucion(db, metadatosEjecucion);
+    
+    // Guardar metadatos en archivo local también
+    fs.writeFileSync(
+      path.join(process.cwd(), 'ultima_ejecucion_metadatos.json'),
+      JSON.stringify(metadatosEjecucion, null, 2),
+      'utf-8'
+    );
+    
+    console.log('\nResumen de la ejecución:');
+    console.log(`- Perfiles procesados: ${metadatosEjecucion.perfiles_procesados.length}`);
+    console.log(`- Total de publicaciones: ${metadatosEjecucion.total_publicaciones}`);
+    console.log(`- Nuevas publicaciones: ${metadatosEjecucion.nuevas_publicaciones}`);
+    console.log(`- Duración: ${metadatosEjecucion.duracion_ms / 1000} segundos`);
+    
+    return todasLasPublicacionesCombinadas;
   } catch (error) {
     console.error('Error durante la extracción:', error);
     return null;
   } finally {
+    // Cerrar conexiones
+    if (mongoClient) {
+      await mongoClient.close();
+      console.log('Conexión a MongoDB cerrada');
+    }
+    
     // Preguntar si desea cerrar el navegador
     console.log('\nPresiona Ctrl+C para terminar el script y cerrar el navegador.');
     // Si prefieres cerrar automáticamente, descomenta:
